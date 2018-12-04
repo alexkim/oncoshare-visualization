@@ -1,0 +1,323 @@
+---
+title: "Prototypes"
+subtitle: "Oncoshare Cancer Data Visualization"
+author: "Alex Kim"
+date: "December 3, 2018"
+output: pdf_document
+---
+
+```{R message=FALSE}
+library(tidyverse)
+library(striprtf)
+```
+
+# Introduction
+
+These visualizations largely focus on comparing standardized incidence rates (SIRs) with age ranges. By representing SIR as time series data (where age range is the "time" variable), I have been able to generate plots demonstrating how SIR values behave in different age ranges for each type of cancer. This also allows one to "track" the SIR across different age ranges for each type of cancer.
+
+I have also clustered the data, revealing several distinct groups of cancers with similar SIR behavior (as a function of age group).
+
+This is still very much exploratory work, and should not be regarded as rigorous analysis.
+
+## A few open questions:
+
+ * Should we primarily focus on statistically significant SIR numbers?
+ * Should we primarily focus on non-breast cancer SIRs (since breast cancer has a disproportionately high SIR)?
+
+## Ideas for future work:
+
+ * Expand clustering to cover year of BC diagnosis, follow-up, and sex
+
+# Import RTF tables as a single tibble
+
+Import script modified from code by Jack Collison and Toren Fronsdal.
+
+```{R warning=FALSE}
+# Import data RTF
+rtf <- read_rtf(file="data.rtf", verbose = FALSE, row_start = "", row_end = "",
+                cell_end = " | ", ignore_tables = FALSE)
+
+# Initialize empty tibble for RTF import
+cancer_data <- tibble(cancer_group = character(),
+                      demographic = character(),
+                      observed = integer(), 
+                      risk_factor = double(), 
+                      expected = double(),
+                      sir = double(),
+                      ci_lower_bound = double(),
+                      ci_upper_bound = double())
+
+# Iteratively import tables within the RTF into a single tibble
+row <- 1
+
+# Iterate over each non-blank line
+for(line in 114:length(rtf)) {
+  if(rtf[line] != "") {
+
+    # Convert each line of the RTF into a vector, separating by the " | " string
+    rtf_line <- strsplit(rtf[line], " | ", fixed=TRUE)[[1]]
+
+    # Identify cancer group from header row
+    if(rtf_line[2] == "O" && !is.na(rtf_line[2])) {
+      cancer_group <- rtf_line[1]
+    }
+
+    # For non-header rows, import entries into the tibble
+    if(rtf_line[2] != "O" && !is.na(rtf_line[2])) {
+      cancer_data[row, 1] <- cancer_group
+      cancer_data[row, 2] <- rtf_line[1]
+      for (j in 2:7) {  # Ignore last column (redundant)
+        numeric_entry <- as.numeric(rtf_line[j])
+        cancer_data[row, j + 1] <- numeric_entry
+      }
+      row <- row + 1
+    }
+  }
+}
+```
+
+*TODO 1:* Accomodate for "." entries - zero or no data?
+
+*TODO 2:* Insetad of iterating the *row* variable, create a whole vector of variables and then use *add_row()* to add the entire vector as a row to *cancer_data*.
+
+# Statistically significant differences between observed and expected incidence rates
+
+## Statistical significance for total incidence rates only
+
+When examining the total incidence rates of each type of cancer, we find that only **25.40%** of observed incidence rates are significantly different from their expected incidence rates.
+
+Of the significant differences, we see that exactly **75%** of differences are positive, i.e. the observed incidence rate is higher than the expected rate. Conversely, **25%** of differences are negative, indicating a smaller number of incidences than expected.
+
+The types of cancer for which the total population sees **significant decreases** are:
+
+ * Liver
+ * Cervix of uterus
+ * Lymphoid leukemia
+ * Other cancers with poorly specified localizations
+
+The types of cancers with **significant increases** are:
+
+ * Stomach
+ * Lung, bronchi, and trachea
+ * Malignant melanoma
+ * Other skin cancer (excluding Basal cell carcinoma)
+ * Other connective tissue
+ * Breast
+ * Uterus
+ * Ovary
+ * Membrane
+ * Myeloid leukemia
+ * Metastases and other non-specified cancer in lymph nodes
+ * Basal cell carcinoma
+
+```{R}
+# Select a subset of variables to compute statistical significance
+sir_significance <- filter(cancer_data, demographic == "TOTAL")
+sir_significance <- filter(sir_significance, cancer_group != "All")
+sir_significance <- select(sir_significance, cancer_group, sir, ci_upper_bound,
+                           ci_lower_bound)
+
+# Compute statistical significance by ensuring 95% CI bounds do not contain 1
+sir_significance <- mutate(sir_significance, significant = if_else(
+  ci_lower_bound <= 1 & ci_upper_bound >= 1, FALSE, TRUE))
+
+# Proportion of statistically significant differences
+mean(sir_significance$significant == TRUE)
+
+# Proportion of statistically significant differences where the difference is positive
+# (i.e. observed value is higher than expected value)
+mean(filter(sir_significance, significant == TRUE)$sir > 1)
+
+# Proportion of statistically significant differences where the difference is negative
+# (i.e. observed value is higher than expected value)
+mean(filter(sir_significance, significant == TRUE)$sir < 1)
+```
+
+***
+
+# SIR vs Age at Breast Cancer Diagnosis
+
+Here, we generate various plots to compare SIR and age at breast cancer diagnosis. This allows us to trace each specific type of cancer's SIR across various age ranges of breast cancer diagnosis.
+
+**TODO:** Bar chart of number statistically significant changes (increase and decrease separate) by age range (aggregated over all cancer types)
+
+## Data Preparation
+
+```{R}
+# Remove unnecessary variables
+age_sir_data <- filter(cancer_data, cancer_group != "All")
+age_sir_data <- filter(age_sir_data, str_detect(demographic, "AGE"))
+age_sir_data <- rename(age_sir_data, age_range = demographic)
+age_sir_data <- mutate(age_sir_data, age_range = gsub(pattern = "^.*?: ",
+                                                      replacement = "",
+                                                      x = age_range))
+
+# Generate a column indicating each observation's statistical significance
+age_sir_data <- mutate(age_sir_data, significant = if_else(
+  ci_lower_bound <= 1 & ci_upper_bound >= 1, FALSE, TRUE))
+
+# Remove additional unnecessary variables
+age_sir_data <- select(age_sir_data, cancer_group, age_range, sir, significant)
+```
+
+## All Cancer Types
+
+```{R}
+# Plot SIR vs age range for all types of cancer (highlighting breast cancer)
+age_sir_data_breast <- mutate(age_sir_data, cancer_type = 
+  if_else(cancer_group == "Breast", "Breast", "Other"))
+ggplot(data = age_sir_data_breast,
+       mapping = aes(x = age_range, y = sir, color = cancer_type)) + 
+  geom_point() +
+  labs(title = "SIR vs Age Range", x = "Age Range of BC Diagnosis", y = "SIR", color = "Cancer Type") +
+  theme_light()
+```
+
+## All Cancer Types Except Breast Cancer
+
+Above, we can see that breast cancer has disproportionately higher SIR values across the board, as one might expect. Because breast cancer is somewhat of an obvious (and extreme) outlier, we exclude it in the following plots.
+
+```{R}
+# Filter out breast cancer observations from data
+age_sir_data_main <- filter(age_sir_data, cancer_group != "Breast")
+
+# Same plot, excluding breast cancer
+ggplot(data = age_sir_data_main, mapping = aes(x = age_range, y = sir,
+                                               group = cancer_group)) + 
+  geom_point() +
+  labs(title = "SIR vs Age Range (excluding breast cancer)",
+       x = "Age Range of BC Diagnosis", y = "SIR") +
+  theme_light()
+```
+
+Here, we can see that the majority of observations have SIR values clustered between 0 and 3. However, we can still identify some fairly extreme data points. To better understand if these outliers come from the same types of cancer, we generate another plot that includes dotted lines connecting the SIR values for each specific type of cancer.
+
+```{R}
+# Same as above, with dotted lines
+ggplot(data = age_sir_data_main, mapping = aes(x = age_range, y = sir, group = cancer_group)) + 
+  geom_point() + geom_line(linetype = "dashed") +
+  labs(title = "SIR vs Age Range (excluding breast cancer)", x = "Age Range of BC Diagnosis", y = "SIR") +
+  theme_light()
+```
+
+From the above plot, we can see that the highest outliers in each age range do not all correspond to the same type of cancer.
+
+## Box Plot
+
+To better understand how concentrated the bulk of data is, we generate a standard boxplot, where the boxes cover the first through third quartiles.
+
+```{R}
+# Boxplot, excluding breast cancer
+ggplot(data = age_sir_data_main, mapping = aes(x = age_range, y = sir)) + 
+  geom_boxplot() +
+  labs(title = "SIR vs Age Range (excluding breast cancer)", x = "Age Range", y = "SIR") +
+  theme_light()
+```
+
+From here, we can see that the majority of SIR values stay within a fairly compact range compared to the few outliers visible in the boxplot. Keep in mind that this excludes breast cancer, which has much higher SIR values.
+
+## K-Means Clustering ($K = 4$)
+
+## Transform the data into a time series
+
+To cluster, we consolidate each type of cancer into a single observation. However, we also treat the SIR value at each age range as a separate variable. Since we have four age ranges in our data, we now have four variables per observation (SIR for each age range). We treat these variables as the time-series observations.
+
+```{R}
+# Generate an empty tibble where age ranges are now columns (time series)
+age_sir_time_series <- tibble(cancer_group = character(),
+                              sir_0_49 = double(),
+                              sir_50_59 = double(),
+                              sir_60_69 = double(),
+                              sir_70_plus = double())
+
+
+# Function to get SIR value given a specific age range and cancer group
+get_sir_by_age_range <- function(cg_string, ar_string) {
+  filter(age_sir_data, cancer_group == cg_string, str_detect(age_range, ar_string))$sir
+}
+
+# Populate the new tibble based on the slimmed data
+for(cancer_group in unique(age_sir_data$cancer_group)) {
+  sir_0_49 <- get_sir_by_age_range(cancer_group, "0 -49")
+  sir_50_59 <- get_sir_by_age_range(cancer_group, "50-59")
+  sir_60_69 <- get_sir_by_age_range(cancer_group, "60-69")
+  sir_70_plus <- get_sir_by_age_range(cancer_group, "70+")
+  
+  # Add row containing extracted time series variables
+  age_sir_time_series <- add_row(age_sir_time_series,
+                                 cancer_group = cancer_group,
+                                 sir_0_49 = sir_0_49,
+                                 sir_50_59 = sir_50_59,
+                                 sir_60_69 = sir_60_69,
+                                 sir_70_plus = sir_70_plus)
+}
+```
+
+## Perform clustering on the time series data
+
+```{R}
+set.seed(1)
+
+# Generate 5 clusters
+age_sir_kmeans <- kmeans(x = select(age_sir_time_series, -cancer_group),
+                         centers = 4)
+cluster_names <- c("A (2 types)", "B (1 type)", "C (3 types)", "D (57 types)")
+
+# Create a tibble of the centroids of the clusters + observations in each cluster
+age_sir_centroids <- as_tibble(age_sir_kmeans$centers)
+age_sir_centroids <- mutate(age_sir_centroids, size = age_sir_kmeans$size)
+
+# Transform into a plottable tibble
+age_sir_centroid_plot <- tibble(cluster = character(),
+                                age_range = integer(),
+                                sir = double())
+for(cluster in 1:nrow(age_sir_centroids)) {
+  for(age_range in 1:4) {
+    sir <- as.numeric(age_sir_centroids[cluster, age_range])
+    age_sir_centroid_plot <- add_row(age_sir_centroid_plot, cluster = cluster_names[cluster],
+                                     age_range = age_range, sir = sir)
+  }
+}
+```
+
+## Plot the clusters
+
+```{R}
+# Plot plottable tibble
+ggplot(data = age_sir_centroid_plot, mapping = aes(x = age_range, y = sir,
+                                                   group = cluster, color = cluster)) + 
+  geom_point() +
+  geom_line() +
+  labs(title = "SIR vs Age Range (clustered)", x = "Age Range", y = "SIR") +
+  theme_light()
+```
+
+Above, we can identify that a few types of cancers have their own specific SIR profiles when mapped against age range. Breast cancer clearly falls into its own cluster, but there are also a couple of other clusters that are distinguishable from the rest of the cancer data. The remaining 57 cancer types are bunched into their own single cluster. It might be worth looking into both the unique, smaller clusters, as well as finding sub-clusters within the large cluster.
+
+Furthermore, we examine exactly which types of cancer make up each cluster.
+
+```{R}
+cluster_assignments <- age_sir_kmeans$cluster
+age_sir_time_series <- mutate(age_sir_time_series, cluster = cluster_assignments)
+```
+
+### Cluster A
+
+```{R}
+filter(age_sir_time_series, cluster == 1)$cancer_group
+```
+
+### Cluster B
+```{R}
+filter(age_sir_time_series, cluster == 2)$cancer_group
+```
+
+### Cluster C
+```{R}
+filter(age_sir_time_series, cluster == 3)$cancer_group
+```
+
+### Cluster D
+```{R}
+filter(age_sir_time_series, cluster == 4)$cancer_group
+```
